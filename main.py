@@ -14,6 +14,7 @@ from dublib.Methods.Filesystem import NormalizePath, WriteJSON
 from dublib.CLI.TextStyler import TextStyler
 from dublib.Methods.Data import Zerotify
 from dublib.Polyglot import HTML
+
 from time import sleep
 
 import shutil
@@ -117,8 +118,8 @@ class Extension(BaseExtension):
 			ItalicFilename = TextStyler(Filename).decorate.italic
 			print(f"[{Index} / {Count}] Downloading \"{ItalicFilename}\"... ", end = "")
 			Result = self.__Downloader.image(Card["image"]["link"], ImagesDirectory)
-			print(Result.message, flush = True)
-			if Result.message != "Already exists.": sleep(self.parser_settings.common.delay)
+			Result.print_messages()
+			if Result.messages[-1] != "Already exists.": sleep(self.parser_settings.common.delay)
 
 		WriteJSON(f"{Directory}/cards.json", cards)
 		Slug = TextStyler(cards["title_slug"]).decorate.bold
