@@ -3,6 +3,7 @@ from Source.Core.ImagesDownloader import ImagesDownloader
 from Source.Core.Base.BaseExtension import BaseExtension
 from Source.Core.Formats import BaseTitle, By
 from Source.Core.Collector import Collector
+from Source.Core.Formats.Manga import Manga
 from Source.Core.Timer import Timer
 from Source.CLI import Templates
 
@@ -10,7 +11,7 @@ from ...main import SITE
 
 from dublib.WebRequestor import Protocols, WebConfig, WebLibs, WebRequestor
 from dublib.CLI.Terminalyzer import Command, ParsedCommandData
-from dublib.Methods.Filesystem import NormalizePath, WriteJSON
+from dublib.Methods.Filesystem import NormalizePath, ListDir
 from dublib.CLI.TextStyler import TextStyler
 from dublib.Methods.Data import Zerotify
 from dublib.Polyglot import HTML
@@ -29,6 +30,31 @@ class Extension(BaseExtension):
 	#==========================================================================================#
 	# >>>>> ПРИВАТНЫЕ МЕТОДЫ <<<<< #
 	#==========================================================================================#
+
+	def __DownloadImages(self, cards: list[dict], used_filename: str):
+		"""
+		Скачивает изображения карт.
+			cards – данные карт;\n
+			used_filename – используемое имя описательного файла.
+		"""
+
+		ImagesDirectory = f"{self._ParserSettings.directories.images}/{used_filename}/cards"
+		if not os.path.exists(ImagesDirectory): os.makedirs(ImagesDirectory)
+		Index = 0
+		Count = len(cards)
+
+		if ListDir(ImagesDirectory) and self.force_mode:
+			shutil.rmtree(ImagesDirectory)
+			os.makedirs(ImagesDirectory)
+
+		for Card in cards:
+			Index += 1
+			Filename = Card["image"]["filename"]
+			ItalicFilename = TextStyler(Filename).decorate.italic
+			print(f"[{Index} / {Count}] Downloading \"{ItalicFilename}\"... ", end = "")
+			Result = self.__Downloader.image(Card["image"]["link"], ImagesDirectory)
+			Result.print_messages()
+			if Result.messages[-1] != "Already exists.": sleep(self.parser_settings.common.delay)
 
 	def __GetCardsInfo(self, title_id: int) -> list[dict]:
 		"""
@@ -93,37 +119,6 @@ class Extension(BaseExtension):
 			Data["character"]["description"] = Zerotify(HTML(info["character"]["description"]).plain_text) if info["character"]["description"] else None
 
 		return Data
-
-	def __Save(self, cards: dict, dir: str):
-		"""
-		Сохраняет описание карточек.
-			cards – описание;\n
-			dir – используемое имя директории карточек.
-		"""
-
-		Directory = f"{self.__OutputDirectory}/{dir}"
-		ImagesDirectory = f"{Directory}/images"
-		if not os.path.exists(Directory): os.makedirs(Directory)
-		if not os.path.exists(ImagesDirectory): os.makedirs(ImagesDirectory)
-		Index = 0
-		Count = len(cards["cards"])
-
-		if os.listdir(ImagesDirectory) and self.force_mode:
-			shutil.rmtree(ImagesDirectory)
-			os.makedirs(ImagesDirectory)
-
-		for Card in cards["cards"]:
-			Index += 1
-			Filename = Card["image"]["filename"]
-			ItalicFilename = TextStyler(Filename).decorate.italic
-			print(f"[{Index} / {Count}] Downloading \"{ItalicFilename}\"... ", end = "")
-			Result = self.__Downloader.image(Card["image"]["link"], ImagesDirectory)
-			Result.print_messages()
-			if Result.messages[-1] != "Already exists.": sleep(self.parser_settings.common.delay)
-
-		WriteJSON(f"{Directory}/cards.json", cards)
-		Slug = TextStyler(cards["title_slug"]).decorate.bold
-		self.portals.info(f"Cards in {Slug} parsed: {Count}.")
 
 	def __SlugToID(self, slug: str) -> int:
 		"""
@@ -253,37 +248,38 @@ class Extension(BaseExtension):
 	# >>>>> ПУБЛИЧНЫЕ МЕТОДЫ <<<<< #
 	#==========================================================================================#
 
-	def parse(self, slug: str):
+	def parse(self, slug: str) -> dict:
 		"""
-		Парсит все карточки тайтла.
+		Парсит все карточки тайтла и прикрепляет их к локальным данным.
 			title – алиас тайтла.
 		"""
 
 		TimerObject = Timer(start = True)
 		title_id = self.__SlugToID(slug)
-		UsedName = str(title_id) if self.parser_settings.common.use_id_as_filename else slug
+		Title = Manga(self._SystemObjects)
 
-		Slug = TextStyler(slug).decorate.bold
+		try: 
+			if self._ParserSettings.common.use_id_as_filename: Title.open(title_id, By.ID)
+			else: Title.open(slug, By.Slug)
 
-		if os.path.exists(f"{self.__OutputDirectory}/{UsedName}") and not self.force_mode:
-			self.portals.info(f"Parsing cards from {Slug} (ID: {title_id})... Already parsed. Skipped.")
-			self.portals.info("Done in " + TimerObject.ends() + ".")
+		except FileNotFoundError:
+			self.portals.error("Title's JSON not found. Parse it first.")
 			return
 
+		Slug = TextStyler(slug).decorate.bold
 		self.portals.info(f"Parsing cards from {Slug} (ID: {title_id})...")
-
-		Cards = {
-			"title_id": title_id,
-			"title_slug": slug,
-			"cards": []
-		}
-		
+		Cards: list[dict] = list()
 		CardsInfo = self.__GetCardsInfo(title_id)
 
 		if CardsInfo:
-			Cards["cards"] = [self.__ParseCardInfo(Card) for Card in CardsInfo]
-			self.__Save(Cards, UsedName)
+			Cards = [self.__ParseCardInfo(Card) for Card in CardsInfo]
+			Title["cards"] = Cards
+			self.__DownloadImages(Cards, Title.used_filename)
+			Title.save()
+			self.portals.info(f"Cards in {Slug} parsed: " + str(len(Cards)) + ".")
 
 		else: self.portals.info(f"Title doesn't have any cards.")
 
 		self.portals.info("Done in " + TimerObject.ends() + ".")
+		
+		return Cards
