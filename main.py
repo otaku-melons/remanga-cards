@@ -9,9 +9,9 @@ from Source.CLI import Templates
 
 from ...main import SITE
 
+from dublib.Methods.Filesystem import ListDir, ReadTextFile, WriteTextFile
 from dublib.WebRequestor import Protocols, WebConfig, WebLibs, WebRequestor
 from dublib.CLI.Terminalyzer import Command, ParsedCommandData
-from dublib.Methods.Filesystem import NormalizePath, ListDir
 from dublib.CLI.TextStyler import TextStyler
 from dublib.Methods.Data import Zerotify
 from dublib.Polyglot import HTML
@@ -52,6 +52,11 @@ class Extension(BaseExtension):
 			Filename = Card["image"]["filename"]
 			ItalicFilename = TextStyler(Filename).decorate.italic
 			print(f"[{Index} / {Count}] Downloading \"{ItalicFilename}\"... ", end = "")
+
+			if os.path.exists(f"{ImagesDirectory}/{Filename}"):
+				print("Already exists.")
+				continue
+
 			Result = self.__Downloader.image(Card["image"]["link"], ImagesDirectory)
 			Result.print_messages()
 			if Result.messages[-1] != "Already exists.": sleep(self.parser_settings.common.delay)
@@ -160,6 +165,7 @@ class Extension(BaseExtension):
 		ComPos.add_argument(description = "Title ID or slug.")
 		ComPos.add_flag("collection", "Parse slugs from Collection.txt file.")
 		ComPos.add_flag("local", description = "Parse cards from all local titles.")
+		ComPos.add_flag("updates", "Parse titles with new carsds since last parsing.")
 		Com.add_key("from", description = "Skip titles before this slug.")
 		CommandsList.append(Com)
 
@@ -189,7 +195,6 @@ class Extension(BaseExtension):
 		"""Метод, выполняющийся после инициализации объекта."""
 
 		self.__Downloader = ImagesDownloader(self.system_objects, self.requestor)
-		self.__OutputDirectory = self.temp if not self.settings["output_directory"] else NormalizePath(self.settings["output_directory"])
 
 	def _ProcessCommand(self, command: ParsedCommandData):
 		"""
@@ -216,6 +221,14 @@ class Extension(BaseExtension):
 				ElapsedTime = TimerObject.ends()
 				print(f"Done in {ElapsedTime}.")
 
+			elif command.check_flag("updates"):
+				TimerObject = Timer(start = True)
+				print("Collecting updates... ", flush = True)
+				Titles = self.get_updated_titles()
+				ElapsedTime = TimerObject.ends()
+				Count = len(Titles)
+				print(f"{Count} updates collected in {ElapsedTime}.")
+
 			else: Titles.append(command.arguments[0])
 
 			if command.check_key("from"):
@@ -236,11 +249,15 @@ class Extension(BaseExtension):
 			TitlesCount = len(Titles)
 
 			for Index in range(StartIndex, TitlesCount):
+				Result = None
+
 				if TitlesCount > 1: Templates.parsing_progress(Index, TitlesCount)
-				try: self.parse(Titles[Index])
+
+				try: Result = self.parse(Titles[Index])
 				except TitleNotFound: NotFoundCount += 1
 				except ParsingError: ErrorsCount += 1
-				else: ParsedCount += 1
+				else:
+					if Result: ParsedCount += 1
 
 			Templates.parsing_summary(ParsedCount, NotFoundCount, ErrorsCount)
 
@@ -248,7 +265,48 @@ class Extension(BaseExtension):
 	# >>>>> ПУБЛИЧНЫЕ МЕТОДЫ <<<<< #
 	#==========================================================================================#
 
-	def parse(self, slug: str) -> dict:
+	def get_updated_titles(self) -> tuple[str]:
+		"""Возвращает последовательность алиасов тайтлов, для которых вышли новые карты с момента последнего запуска."""
+
+		PreviousCardID = None
+
+		MemoryFile = f"{self._Temper.extension_temp}/last_card_id.txt"
+		if os.path.exists(MemoryFile): PreviousCardID = int(ReadTextFile(MemoryFile).strip())
+
+		LastCardID = None
+		Titles = list()
+		IsParsingDone = False
+		Page = 1
+
+		while not IsParsingDone:
+			Response = self._Requestor.get(f"https://{SITE}/api/inventory/catalog/?count=30&ordering=-id&page={Page}")
+
+			if Response.status_code == 200: 
+
+				for Card in Response.json["results"]:
+					if not LastCardID: LastCardID = Card["id"]
+					if not PreviousCardID or Card["id"] > PreviousCardID: Titles.append(Card["title"]["dir"])
+					elif Card["id"] <= PreviousCardID: IsParsingDone = True
+
+					if not PreviousCardID:
+						self.portals.warning("First parsing. Collection only one slug.")
+						IsParsingDone = True
+						break
+
+				if Titles: self.portals.info(f"Cards on page {Page} parsed.")
+				sleep(self.parser_settings.common.delay)
+
+			else:
+				self.portals.request_error(Response, "Unable to request cards info.")
+				break
+
+			Page += 1
+
+		WriteTextFile(MemoryFile, str(LastCardID))
+		
+		return tuple(set(Titles))
+
+	def parse(self, slug: str) -> dict | None:
 		"""
 		Парсит все карточки тайтла и прикрепляет их к локальным данным.
 			title – алиас тайтла.
@@ -257,17 +315,17 @@ class Extension(BaseExtension):
 		TimerObject = Timer(start = True)
 		title_id = self.__SlugToID(slug)
 		Title = Manga(self._SystemObjects)
+		BoldSlug = TextStyler(slug).decorate.bold
 
 		try: 
 			if self._ParserSettings.common.use_id_as_filename: Title.open(title_id, By.ID)
 			else: Title.open(slug, By.Slug)
 
 		except FileNotFoundError:
-			self.portals.error("Title's JSON not found. Parse it first.")
+			self.portals.warning(f"JSON for {BoldSlug} not found. Parse it first.")
 			return
 
-		Slug = TextStyler(slug).decorate.bold
-		self.portals.info(f"Parsing cards from {Slug} (ID: {title_id})...")
+		self.portals.info(f"Parsing cards from {BoldSlug} (ID: {title_id})...")
 		Cards: list[dict] = list()
 		CardsInfo = self.__GetCardsInfo(title_id)
 
@@ -276,7 +334,7 @@ class Extension(BaseExtension):
 			Title["cards"] = Cards
 			self.__DownloadImages(Cards, Title.used_filename)
 			Title.save()
-			self.portals.info(f"Cards in {Slug} parsed: " + str(len(Cards)) + ".")
+			self.portals.info(f"Cards in {BoldSlug} parsed: " + str(len(Cards)) + ".")
 
 		else: self.portals.info(f"Title doesn't have any cards.")
 
