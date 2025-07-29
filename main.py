@@ -1,23 +1,21 @@
-from Source.Core.Exceptions import ParsingError, TitleNotFound
-from Source.Core.ImagesDownloader import ImagesDownloader
-from Source.Core.Base.BaseExtension import BaseExtension
-from Source.Core.Formats import BaseTitle, By
+from Source.Core.Base.Parsers.Components.ImagesDownloader import ImagesDownloader
+from Source.Core.Base.Extensions.BaseExtension import BaseExtension
+from Source.Core.Base.Formats.BaseFormat import BaseTitle, By
+from Source.Core.Base.Formats.Manga import Manga
 from Source.Core.Collector import Collector
-from Source.Core.Formats.Manga import Manga
+from Source.CLI.Templates import Templates
 from Source.Core.Timer import Timer
-from Source.CLI import Templates
-
-from ...main import SITE
+from Source.Core import Exceptions
 
 from dublib.Methods.Filesystem import ListDir, ReadTextFile, WriteTextFile
 from dublib.WebRequestor import Protocols, WebConfig, WebLibs, WebRequestor
 from dublib.CLI.Terminalyzer import Command, ParsedCommandData
-from dublib.CLI.TextStyler import TextStyler
+from dublib.CLI.TextStyler.FastStyler import FastStyler
 from dublib.Methods.Data import Zerotify
 from dublib.Polyglot import HTML
 
+from json.decoder import JSONDecodeError
 from time import sleep
-
 import shutil
 import os
 
@@ -50,16 +48,17 @@ class Extension(BaseExtension):
 		for Card in cards:
 			Index += 1
 			Filename = Card["image"]["filename"]
-			ItalicFilename = TextStyler(Filename).decorate.italic
+			ItalicFilename = FastStyler(Filename).decorate.italic
 			print(f"[{Index} / {Count}] Downloading \"{ItalicFilename}\"... ", end = "")
+			Result = self.__Downloader.image(Card["image"]["link"], ImagesDirectory)
 
-			if os.path.exists(f"{ImagesDirectory}/{Filename}"):
+			if Result["exists"]:
 				print("Already exists.")
 				continue
 
-			Result = self.__Downloader.image(Card["image"]["link"], ImagesDirectory)
-			Result.print_messages()
-			if Result.messages[-1] != "Already exists.": sleep(self.parser_settings.common.delay)
+			if Result.value:
+				print("Done.")
+				sleep(self.parser_settings.common.delay)
 
 	def __GetCardsInfo(self, title_id: int) -> list[dict]:
 		"""
@@ -72,11 +71,11 @@ class Extension(BaseExtension):
 		Info = list()
 
 		while not IsParsed:
-			Response = self.requestor.get(f"https://{SITE}/api/inventory/{title_id}/cards/?count=30&page={Page}")
+			Response = self.requestor.get(f"https://{self._Manifest.site}/api/inventory/{title_id}/cards/?count=30&page={Page}")
 		
 			if Response.status_code == 200: 
 				Info += [Element for Element in Response.json["results"]]
-				if Info: self.portals.info(f"Cards on page {Page} parsed.")
+				if Info: self.portals.info(f"Cards on title's page {Page} parsed.")
 				Page += 1
 				sleep(self.parser_settings.common.delay)
 
@@ -131,17 +130,17 @@ class Extension(BaseExtension):
 			slug – алиас.
 		"""
 
-		Response = self.requestor.get(f"https://{SITE}/api/titles/{slug}/")
+		Response = self.requestor.get(f"https://{self._Manifest.site}/api/v2/titles/{slug}/")
 
 		if Response.status_code == 200:
-			return Response.json["content"]["id"]
+			return Response.json["id"]
 		
 		elif Response.status_code == 404:
 			Title = BaseTitle(self.system_objects)
-			Title.open(slug, By.Slug, exception = False)
+			Title.open(slug, By.Slug)
 			Title.set_slug(slug)
 
-			Slug = TextStyler(slug).decorate.bold
+			Slug = FastStyler(slug).decorate.bold
 			NoteID = f" (ID: {Title.id})" if Title.id else ""
 			print(f"Parsing cards from {Slug}{NoteID}... ")
 
@@ -166,35 +165,16 @@ class Extension(BaseExtension):
 		ComPos.add_flag("collection", "Parse slugs from Collection.txt file.")
 		ComPos.add_flag("local", description = "Parse cards from all local titles.")
 		ComPos.add_flag("updates", "Parse titles with new carsds since last parsing.")
-		Com.add_key("from", description = "Skip titles before this slug.")
+		Com.base.add_key("from", description = "Skip titles before this slug.")
 		CommandsList.append(Com)
 
 		return CommandsList
-	
-	def _InitializeRequestor(self) -> WebRequestor:
-		"""Инициализирует модуль WEB-запросов."""
-
-		Config = WebConfig()
-		Config.select_lib(WebLibs.requests)
-		Config.set_retries_count(self._ParserSettings.common.retries)
-		if self._ParserSettings.custom["token"]: Config.add_header("Authorization", self._ParserSettings.custom["token"])
-		Config.add_header("Referer", f"https://{SITE}/")
-		WebRequestorObject = WebRequestor(Config)
-
-		if self._ParserSettings.proxy.enable: WebRequestorObject.add_proxy(
-			Protocols.HTTPS,
-			host = self._ParserSettings.proxy.host,
-			port = self._ParserSettings.proxy.port,
-			login = self._ParserSettings.proxy.login,
-			password = self._ParserSettings.proxy.password
-		)
-
-		return WebRequestorObject
 
 	def _PostInitMethod(self):
 		"""Метод, выполняющийся после инициализации объекта."""
 
 		self.__Downloader = ImagesDownloader(self.system_objects, self.requestor)
+		self._Requestor.config.add_header("Authorization", self._ParserSettings.custom["token"])
 
 	def _ProcessCommand(self, command: ParsedCommandData):
 		"""
@@ -236,7 +216,7 @@ class Extension(BaseExtension):
 
 				if StartSlug in Titles:
 					StartIndex = Titles.index(StartSlug)
-					StartSlug = TextStyler(StartSlug).decorate.bold
+					StartSlug = FastStyler(StartSlug).decorate.bold
 					self._Portals.info(f"Parsing will be started from \"{StartSlug}\".")
 
 				else: self._Portals.warning("No starting slug in collection. Ignored.")
@@ -254,8 +234,8 @@ class Extension(BaseExtension):
 				if TitlesCount > 1: Templates.parsing_progress(Index, TitlesCount)
 
 				try: Result = self.parse(Titles[Index])
-				except TitleNotFound: NotFoundCount += 1
-				except ParsingError: ErrorsCount += 1
+				except Exceptions.TitleNotFound: NotFoundCount += 1
+				except Exceptions.ParsingError: ErrorsCount += 1
 				else:
 					if Result: ParsedCount += 1
 
@@ -268,7 +248,7 @@ class Extension(BaseExtension):
 	def get_updated_titles(self) -> tuple[str]:
 		"""Возвращает последовательность алиасов тайтлов, для которых вышли новые карты с момента последнего запуска."""
 
-		PreviousCardID = None
+		PreviousCardID = -1
 
 		MemoryFile = f"{self._Temper.extension_temp}/last_card_id.txt"
 		if os.path.exists(MemoryFile): PreviousCardID = int(ReadTextFile(MemoryFile).strip())
@@ -279,13 +259,13 @@ class Extension(BaseExtension):
 		Page = 1
 
 		while not IsParsingDone:
-			Response = self._Requestor.get(f"https://{SITE}/api/inventory/catalog/?count=30&ordering=-id&page={Page}")
+			Response = self._Requestor.get(f"https://{self._Manifest.site}/api/v2/inventory/catalog/?count=30&ordering=-id&page={Page}")
 
 			if Response.status_code == 200: 
 
 				for Card in Response.json["results"]:
 					if not LastCardID: LastCardID = Card["id"]
-					if not PreviousCardID or Card["id"] > PreviousCardID: Titles.append(Card["title"]["dir"])
+					if Card["id"] > PreviousCardID and Card["title"]: Titles.append(Card["title"]["dir"])
 					elif Card["id"] <= PreviousCardID: IsParsingDone = True
 
 					if not PreviousCardID:
@@ -315,7 +295,7 @@ class Extension(BaseExtension):
 		TimerObject = Timer(start = True)
 		title_id = self.__SlugToID(slug)
 		Title = Manga(self._SystemObjects)
-		BoldSlug = TextStyler(slug).decorate.bold
+		BoldSlug = FastStyler(slug).decorate.bold
 
 		try: 
 			if self._ParserSettings.common.use_id_as_filename: Title.open(title_id, By.ID)
@@ -324,7 +304,15 @@ class Extension(BaseExtension):
 		except FileNotFoundError:
 			self.portals.warning(f"JSON for {BoldSlug} not found. Parse it first.")
 			return
+		
+		except JSONDecodeError as ExceptionData:
+			self.portals.error(str(ExceptionData))
+			return
 
+		except Exceptions.UnsupportedFormat as ExceptionData:
+			self.portals.error(str(ExceptionData))
+			return
+		
 		self.portals.info(f"Parsing cards from {BoldSlug} (ID: {title_id})...")
 		Cards: list[dict] = list()
 		CardsInfo = self.__GetCardsInfo(title_id)
