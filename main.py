@@ -8,7 +8,6 @@ from Source.Core.Timer import Timer
 from Source.Core import Exceptions
 
 from dublib.Methods.Filesystem import ListDir, ReadTextFile, WriteTextFile
-from dublib.WebRequestor import Protocols, WebConfig, WebLibs, WebRequestor
 from dublib.CLI.Terminalyzer import Command, ParsedCommandData
 from dublib.CLI.TextStyler.FastStyler import FastStyler
 from dublib.Methods.Data import Zerotify
@@ -66,24 +65,22 @@ class Extension(BaseExtension):
 			title_id – ID тайтла.
 		"""
 
-		IsParsed = False
 		Page = 1
 		Info = list()
 
-		while not IsParsed:
-			Response = self.requestor.get(f"https://{self._Manifest.site}/api/inventory/{title_id}/cards/?count=30&page={Page}")
+		while True:
+			Response = self.requestor.get(f"https://{self._ParserManifest.site}/api/inventory/{title_id}/cards/?count=30&page={Page}")
 		
-			if Response.status_code == 200: 
-				Info += [Element for Element in Response.json["results"]]
-				if Info: self.portals.info(f"Cards on title's page {Page} parsed.")
+			if Response.status_code == 200:
+
+				if Response.json["results"]:
+					self.portals.info(f"Cards on title's page {Page} parsed.")
+					Info.extend(Response.json["results"])
+
+				else: break
+
 				Page += 1
 				sleep(self.parser_settings.common.delay)
-
-			elif Response.status_code == 404 and Page > 1:
-				IsParsed = True
-
-			elif Response.status_code == 404:
-				IsParsed = True
 
 			else:
 				self.portals.request_error(Response, "Unable to request cards info.")
@@ -130,7 +127,7 @@ class Extension(BaseExtension):
 			slug – алиас.
 		"""
 
-		Response = self.requestor.get(f"https://{self._Manifest.site}/api/v2/titles/{slug}/")
+		Response = self.requestor.get(f"https://{self._ParserManifest.site}/api/v2/titles/{slug}/")
 
 		if Response.status_code == 200:
 			return Response.json["id"]

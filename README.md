@@ -1,5 +1,5 @@
 # remanga-cards
-**remanga-cards** – это расширение [Melon](https://github.com/Otaku-Melons/Melon) для парсера [remanga](https://github.com/Otaku-Melons/remanga), предоставляющее удобный инструментарий для парсинга карт персонажей.
+**remanga-cards** – это расширение [Melon](https://github.com/otaku-melons/Melon) для парсера [remanga](https://github.com/Otaku-Melons/remanga), предоставляющее удобный инструментарий для парсинга карт персонажей.
 
 Спаршенные данные заносятся в локальный JSON-файл тайтла, поэтому перед получением карт тайтл уже должен быть собран обычным методом.
 
